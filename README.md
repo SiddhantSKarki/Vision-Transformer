@@ -24,6 +24,8 @@ Install the required libraries using the following command:
 ```bash
 pip install -r requirements.txt
 
+```
+
 # How to Run
 
 ## 1. Prepare the Dataset
