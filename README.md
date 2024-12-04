@@ -1,4 +1,4 @@
-# Vision Transformer for Brain Tumor Classification
+# Vision Transformer from Scratch (Code available for Transformer Encoder + ViT)
 
 This repository contains the implementation of a Vision Transformer (ViT) model for brain tumor classification. The project includes scripts for data preprocessing, model training, and analysis, along with configuration files to replicate the results.
 
