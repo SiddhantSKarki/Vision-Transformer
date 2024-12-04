@@ -5,7 +5,6 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 ##### Hyper parameters#############
-## TODO: Implement Config files instead of this
 input_channels = 3 # 1 for Gray Scale Imgs and 3 for RGB
 p_embd_size = 32
 batch_size = 8
@@ -16,10 +15,34 @@ precision = torch.float32
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 ##### Hyper Parameters #############
 
-#<-----------Transformer Encoder Code Starts Here-----------------------> 
 
-#TODO: Implement Transformer Encoder Block
+'''
+    ViT Config File
+'''
+class ViTConfig:
+    def __init__(self,
+                 input_channels,
+                 num_classes,
+                 num_patches,
+                 embedding_size,
+                 patch_size,
+                 num_heads,
+                 num_blocks,
+                 dropout=0.2,
+                 precision=torch.float32):
+        self.input_channels = input_channels
+        self.num_classes = num_classes
+        self.num_patches = num_patches
+        self.embedding_size = embedding_size
+        self.patch_size = patch_size
+        self.num_heads = num_heads
+        self.num_blocks = num_blocks
+        self.dropout = dropout
+        self.precision = precision
 
+''' 
+Transformer Encoder Code Starts Here
+'''
 class Head(nn.Module):
     def __init__(self, head_size, n_embd, block_size):
         super().__init__()
@@ -45,9 +68,9 @@ class Head(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, head_size, n_embd, dropout=0.2):
+    def __init__(self, num_heads, head_size, n_embd, block_size, dropout=0.2):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size, n_embd) for _ in range(num_heads)])
+        self.heads = nn.ModuleList([Head(head_size, n_embd, block_size) for _ in range(num_heads)])
         self.proj = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
         
@@ -70,13 +93,14 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, x):
-        return self.net(x)
+        x = self.mlp(x)
+        return x
 
 class Block(nn.Module):
-    def __init__(self, n_embd, n_head):
+    def __init__(self, n_embd, n_head, block_size):
         super().__init__()
         head_size = n_embd // n_head
-        self.multi_head = MultiHeadAttention(n_head, head_size)
+        self.multi_head = MultiHeadAttention(n_head, head_size, n_embd, block_size)
         self.ffwd = FeedForward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -89,10 +113,10 @@ class Block(nn.Module):
     
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, embedding_size, num_heads, num_blocks):
+    def __init__(self, embedding_size, num_heads, num_blocks, block_size):
         super().__init__()
         self.blocks = nn.Sequential(
-            *[Block(embedding_size, num_heads) for _ in range(num_blocks)]
+            *[Block(embedding_size, num_heads, block_size) for _ in range(num_blocks)]
         )
         
     def forward(self, x):
@@ -102,15 +126,16 @@ class TransformerEncoder(nn.Module):
 ########################################################################
 ########################################################################
 ########################################################################
-#<-----------Vision Transformer Code Starts Here----------------------->
+''' 
+Vision Transformer Code Starts Here
+'''
 class PatchEmbedding(nn.Module):
     def __init__(self,
                 input_channels,
                 embedding_size,
                 patch_size,
                 num_patches,
-                precision,
-                device):
+                precision):
         super().__init__()
         # Convert an image into patches
         self.sequence = nn.Sequential(
@@ -144,46 +169,36 @@ class PatchEmbedding(nn.Module):
 
 class VisionTransformer(nn.Module):
     def __init__(self,
-                input_channels,
-                num_classes,
-                embedding_size,
-                patch_size,
-                num_patches,
-                num_heads,
-                num_blocks,
-                precision,
-                device):
+                config: ViTConfig):
         super().__init__()
 
         self.emdeddings = PatchEmbedding(
-                input_channels=input_channels,
-                embedding_size=embedding_size,
-                patch_size=patch_size,
-                num_patches=num_patches,
-                precision=precision,
-                device=device)
+                input_channels=config.input_channels,
+                embedding_size=config.embedding_size,
+                patch_size=config.patch_size,
+                num_patches=config.num_patches,
+                precision=config.precision,
+        )
         
         self.transformer_encoder = TransformerEncoder(
-            embedding_size=embedding_size,
-            num_heads=num_heads,
-            num_blocks=num_blocks
+            embedding_size=config.embedding_size,
+            num_heads=config.num_heads,
+            num_blocks=config.num_blocks,
+            block_size=config.num_patches+1,
         )
         
         self.mlp = nn.Sequential(
-            nn.Linear(embedding_size, 4*embedding_size),
+            nn.Linear(config.embedding_size, 4*config.embedding_size),
             nn.GELU(),
-            nn.Linear(4*embedding_size, num_classes)
+            nn.LayerNorm(4*config.embedding_size),
+            nn.Linear(4*config.embedding_size, config.num_classes)
         )
-
-        self.ln = nn.LayerNorm()
 
 
     def forward(self, x):
         x = self.emdeddings(x)
         x = self.transformer_encoder(x)
-        x = self.ln(x + self.mlp(x[:, 0, :]))
-        return x
-        
-#<-----------Vision Transformer Code Ends Here-----------------------> 
+        return self.mlp(x[:, 0, :])
+#<-----------Vision Transformer Code Ends Here----------------------->
 
 
