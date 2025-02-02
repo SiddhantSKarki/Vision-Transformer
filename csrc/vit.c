@@ -267,6 +267,11 @@ void init_head_bias(float* biases, size_t size) {
 
 // Wrapper function to initialize the entire model parameters
 void vit_init(ViT* model, ViTConfig config, int verbose) {
+    // Calculate parameter sizes
+    int P = config.patch_size;
+    int C = 3;  // RGB channels
+    int N = (config.image_size / P) * (config.image_size / P);
+    int D = config.hidden_dim;
     if (verbose) {
         printf("************************************\n");
         printf("Vision Transformer (ViT) - Random Initialization\n");
@@ -278,49 +283,167 @@ void vit_init(ViT* model, ViTConfig config, int verbose) {
 
     // Initialize each component
     if (verbose) printf("Initializing patch projection weights\n");
-    init_patch_proj_weight(model->params.patch_proj_weight, config.patch_size * config.patch_size * 3 * config.hidden_dim);
+    init_patch_proj_weight(model->params.patch_proj_weight, C * P * P * D);
 
     if (verbose) printf("Initializing patch projection biases\n");
-    init_patch_proj_bias(model->params.patch_proj_bias, config.hidden_dim);
+    init_patch_proj_bias(model->params.patch_proj_bias, D);
 
     if (verbose) printf("Initializing positional embeddings\n");
-    init_pos_emb(model->params.pos_emb, (config.image_size / config.patch_size) * (config.image_size / config.patch_size) + 1 * config.hidden_dim);
+    init_pos_emb(model->params.pos_emb, (N + 1) * D);
 
     if (verbose) printf("====================================\n");
     if (verbose) printf("Initializing attention QKV weights\n");
-    init_attn_qkv_weight(model->params.attn_qkv_weight, config.hidden_dim * 3 * config.hidden_dim);
+    init_attn_qkv_weight(model->params.attn_qkv_weight, D * 3 * D);
 
     if (verbose) printf("Initializing attention QKV biases\n");
-    init_attn_qkv_bias(model->params.attn_qkv_bias, 3 * config.hidden_dim);
+    init_attn_qkv_bias(model->params.attn_qkv_bias, 3 * D);
 
     if (verbose) printf("Initializing attention projection weights\n");
-    init_attn_proj_weight(model->params.attn_proj_weight, config.hidden_dim * config.hidden_dim);
+    init_attn_proj_weight(model->params.attn_proj_weight, D * D);
 
     if (verbose) printf("Initializing attention projection biases\n");
-    init_attn_proj_bias(model->params.attn_proj_bias, config.hidden_dim);
+    init_attn_proj_bias(model->params.attn_proj_bias, D);
 
     if (verbose) printf("====================================\n");
     if (verbose) printf("Initializing MLP first layer weights\n");
-    init_mlp_fc1_weight(model->params.mlp_fc1_weight, config.hidden_dim * 4 * config.hidden_dim);
+    init_mlp_fc1_weight(model->params.mlp_fc1_weight, D * 4 * D);
 
     if (verbose) printf("Initializing MLP first layer biases\n");
-    init_mlp_fc1_bias(model->params.mlp_fc1_bias, 4 * config.hidden_dim);
+    init_mlp_fc1_bias(model->params.mlp_fc1_bias, 4 * D);
 
     if (verbose) printf("Initializing MLP second layer weights\n");
-    init_mlp_fc2_weight(model->params.mlp_fc2_weight, 4 * config.hidden_dim * config.hidden_dim);
+    init_mlp_fc2_weight(model->params.mlp_fc2_weight, 4 * D * D);
 
     if (verbose) printf("Initializing MLP second layer biases\n");
-    init_mlp_fc2_bias(model->params.mlp_fc2_bias, config.hidden_dim);
+    init_mlp_fc2_bias(model->params.mlp_fc2_bias, D);
 
     if (verbose) printf("====================================\n");
     if (verbose) printf("Initializing classification head weights\n");
-    init_head_weight(model->params.head_weight, config.hidden_dim * config.num_classes);
+    init_head_weight(model->params.head_weight, D * config.num_classes);
 
     if (verbose) printf("Initializing classification head biases\n");
     init_head_bias(model->params.head_bias, config.num_classes);
 
     printf("************************************\n");
     printf("Parameter initialization successful.\n");
+    printf("************************************\n");
+}
+
+// ----------------------------------------------------------------------------
+// Visualization Functions
+// Helper function to print a 2D matrix
+void print_matrix(const float* matrix, int rows, int cols, const char* name) {
+    printf("Matrix: %s (%d x %d)\n", name, rows, cols);
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("%8.4f ", matrix[i * cols + j]);  // Print each element with 4 decimal places
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+// Component-specific visualization functions
+void visualize_patch_proj_weight(const ViT* model, ViTConfig config) {
+    int rows = config.patch_size * config.patch_size * 3;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.patch_proj_weight, rows, cols, "Patch Projection Weights");
+}
+
+void visualize_patch_proj_bias(const ViT* model, ViTConfig config) {
+    int rows = 1;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.patch_proj_bias, rows, cols, "Patch Projection Biases");
+}
+
+void visualize_pos_emb(const ViT* model, ViTConfig config) {
+    int rows = (config.image_size / config.patch_size) * (config.image_size / config.patch_size) + 1;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.pos_emb, rows, cols, "Positional Embeddings");
+}
+
+void visualize_attn_qkv_weight(const ViT* model, ViTConfig config) {
+    int rows = config.hidden_dim;
+    int cols = 3 * config.hidden_dim;
+    print_matrix(model->params.attn_qkv_weight, rows, cols, "Attention QKV Weights");
+}
+
+void visualize_attn_qkv_bias(const ViT* model, ViTConfig config) {
+    int rows = 1;
+    int cols = 3 * config.hidden_dim;
+    print_matrix(model->params.attn_qkv_bias, rows, cols, "Attention QKV Biases");
+}
+
+void visualize_attn_proj_weight(const ViT* model, ViTConfig config) {
+    int rows = config.hidden_dim;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.attn_proj_weight, rows, cols, "Attention Projection Weights");
+}
+
+void visualize_attn_proj_bias(const ViT* model, ViTConfig config) {
+    int rows = 1;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.attn_proj_bias, rows, cols, "Attention Projection Biases");
+}
+
+void visualize_mlp_fc1_weight(const ViT* model, ViTConfig config) {
+    int rows = config.hidden_dim;
+    int cols = 4 * config.hidden_dim;
+    print_matrix(model->params.mlp_fc1_weight, rows, cols, "MLP First Layer Weights");
+}
+
+void visualize_mlp_fc1_bias(const ViT* model, ViTConfig config) {
+    int rows = 1;
+    int cols = 4 * config.hidden_dim;
+    print_matrix(model->params.mlp_fc1_bias, rows, cols, "MLP First Layer Biases");
+}
+
+void visualize_mlp_fc2_weight(const ViT* model, ViTConfig config) {
+    int rows = 4 * config.hidden_dim;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.mlp_fc2_weight, rows, cols, "MLP Second Layer Weights");
+}
+
+void visualize_mlp_fc2_bias(const ViT* model, ViTConfig config) {
+    int rows = 1;
+    int cols = config.hidden_dim;
+    print_matrix(model->params.mlp_fc2_bias, rows, cols, "MLP Second Layer Biases");
+}
+
+void visualize_head_weight(const ViT* model, ViTConfig config) {
+    int rows = config.hidden_dim;
+    int cols = config.num_classes;
+    print_matrix(model->params.head_weight, rows, cols, "Classification Head Weights");
+}
+
+void visualize_head_bias(const ViT* model, ViTConfig config) {
+    int rows = 1;
+    int cols = config.num_classes;
+    print_matrix(model->params.head_bias, rows, cols, "Classification Head Biases");
+}
+
+// Wrapper function to visualize all parameters
+void visualize_vit_parameters(const ViT* model, ViTConfig config) {
+    printf("************************************\n");
+    printf("Visualizing ViT Model Parameters\n");
+    printf("************************************\n");
+
+    visualize_patch_proj_weight(model, config);
+    visualize_patch_proj_bias(model, config);
+    visualize_pos_emb(model, config);
+    visualize_attn_qkv_weight(model, config);
+    visualize_attn_qkv_bias(model, config);
+    visualize_attn_proj_weight(model, config);
+    visualize_attn_proj_bias(model, config);
+    visualize_mlp_fc1_weight(model, config);
+    visualize_mlp_fc1_bias(model, config);
+    visualize_mlp_fc2_weight(model, config);
+    visualize_mlp_fc2_bias(model, config);
+    visualize_head_weight(model, config);
+    visualize_head_bias(model, config);
+
+    printf("************************************\n");
+    printf("Visualization complete.\n");
     printf("************************************\n");
 }
 
@@ -333,8 +456,8 @@ int main() {
         .image_size = 4,
         .patch_size = 1,
         .num_layers = 1,
-        .num_heads = 2,
-        .hidden_dim = 8,
+        .num_heads = 1,
+        .hidden_dim = 2,
         .num_classes = 2
     };
 
@@ -342,6 +465,8 @@ int main() {
     ViT model;
     vit_alloc(&model, config, 0);
     vit_init(&model, config, 1);
+
+    visualize_vit_parameters(&model, config);
 
     // Create dummy input image (32x32 RGB)
     float* image = malloc(3 * 32 * 32 * sizeof(float));
