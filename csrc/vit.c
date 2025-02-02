@@ -42,11 +42,13 @@
     } \
     printf("\n");
 
+#define RANDOM_STATE 69
 
 // ----------------------------------------------------------------------------
 // Core Components
 typedef struct {
     int image_size;    // Input image size (assumed square)
+    int channels; // Channels
     int patch_size;    // Size of each patch (square)
     int num_layers;    // Number of transformer layers
     int num_heads;     // Number of attention heads
@@ -88,14 +90,100 @@ typedef struct {
 
 
 // ----------------------------------------------------------------------------
+// Layer Implementations
+
+// Patch embedding: Convert image to sequence of patch embeddings
+void patch_embed(float* out, const float* image, 
+                const float* weight, const float* bias,
+                int C, int H, int W, int P, int D) {
+    int N = (H / P) * (W / P);
+    int pp = P * P;
+    
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < H/P; y++) {
+        for (int x = 0; x < W/P; x++) {
+            float* patch = out + (y*(W/P) + x)*D;
+            
+            // Initialize with bias
+            memcpy(patch, bias, D * sizeof(float));
+            
+            // Convolution-style patch extraction
+            for (int c = 0; c < C; c++) {
+                for (int dy = 0; dy < P; dy++) {
+                    for (int dx = 0; dx < P; dx++) {
+                        float pixel = image[c*H*W + (y*P+dy)*W + (x*P+dx)];
+                        const float* w = weight + (c*pp + dy*P + dx)*D;
+                        
+                        for (int d = 0; d < D; d++) {
+                            patch[d] += pixel * w[d];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Add positional embeddings to patch embeddings
+void add_position_embeddings(float* embeddings, const float* pos_emb, 
+                            int B, int N, int D) {
+    #pragma omp parallel for collapse(2)
+    for (int b = 0; b < B; b++) {
+        for (int i = 0; i < N; i++) {
+            float* emb = embeddings + b*N*D + i*D;
+            const float* pos = pos_emb + i*D;
+            
+            for (int d = 0; d < D; d++) {
+                emb[d] += pos[d];
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Forward Pass
+
+float* vit_forward(ViT* model, const float* image) {
+    ViTConfig c = model->config;
+    int P = c.patch_size; // Patch Size
+    int C = c.channels;  // RGB channels
+    int H = c.image_size; // Height
+    int W = c.image_size; // Width
+    int D = c.hidden_dim; // Patch Embedding Dimension
+    int N = (H/P) * (W/P); // Number of Patches
+
+    // Allocate activation memory
+    float* patches, * attn_out, * mlp_out, * logits;
+    printf("Allocating: %ld\n", N*D*sizeof(float));
+    mallocCheck(patches, N*D*sizeof(float));
+
+    // 1. Patch embedding
+    patch_embed(patches, image,
+               model->params.patch_proj_weight,
+               model->params.patch_proj_bias,
+               C, H, W, P, D);
+
+    // 2. Add positional embeddings
+    add_position_embeddings(patches, model->params.pos_emb, 1, N, D);
+
+    // Cleanup intermediate buffers
+    // free(patches);
+
+    return patches;
+}
+
+
+
+// ----------------------------------------------------------------------------
 // Model Allocation
 
-void vit_alloc(ViT* model, ViTConfig config, int verbose) {
+void vit_alloc(ViT* model, int verbose) {
     if (verbose) {
         printf("************************************\n");
         printf("Vision Transformer (ViT) - Initialization\n");
         printf("************************************\n");
     }
+    ViTConfig config = model->config;
     // Calculate parameter sizes
     int P = config.patch_size;
     int C = 3;  // RGB channels
@@ -263,8 +351,9 @@ void init_head_bias(float* biases, size_t size) {
 }
 
 // Wrapper function to initialize the entire model parameters
-void vit_init(ViT* model, ViTConfig config, int verbose) {
+void vit_init(ViT* model, int verbose) {
     // Calculate parameter sizes
+    ViTConfig config = model->config;
     int P = config.patch_size;
     int C = 3;  // RGB channels
     int N = (config.image_size / P) * (config.image_size / P);
@@ -276,7 +365,7 @@ void vit_init(ViT* model, ViTConfig config, int verbose) {
     }
 
     // Seed the random number generator
-    srand(time(NULL));
+    srand(RANDOM_STATE);
 
     // Initialize each component
     if (verbose) printf("Initializing patch projection weights\n");
@@ -326,6 +415,8 @@ void vit_init(ViT* model, ViTConfig config, int verbose) {
     printf("************************************\n");
 }
 
+
+
 // ----------------------------------------------------------------------------
 // Visualization Functions
 // Helper function to print a 2D matrix
@@ -341,103 +432,103 @@ void print_matrix(const float* matrix, int rows, int cols, const char* name) {
 }
 
 // Component-specific visualization functions
-void visualize_patch_proj_weight(const ViT* model, ViTConfig config) {
-    int rows = config.patch_size * config.patch_size * 3;
-    int cols = config.hidden_dim;
+void visualize_patch_proj_weight(const ViT* model) {
+    int rows = model->config.patch_size * model->config.patch_size * 3;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.patch_proj_weight, rows, cols, "Patch Projection Weights");
 }
 
-void visualize_patch_proj_bias(const ViT* model, ViTConfig config) {
+void visualize_patch_proj_bias(const ViT* model) {
     int rows = 1;
-    int cols = config.hidden_dim;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.patch_proj_bias, rows, cols, "Patch Projection Biases");
 }
 
-void visualize_pos_emb(const ViT* model, ViTConfig config) {
-    int rows = (config.image_size / config.patch_size) * (config.image_size / config.patch_size) + 1;
-    int cols = config.hidden_dim;
+void visualize_pos_emb(const ViT* model) {
+    int rows = (model->config.image_size / model->config.patch_size) * (model->config.image_size / model->config.patch_size) + 1;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.pos_emb, rows, cols, "Positional Embeddings");
 }
 
-void visualize_attn_qkv_weight(const ViT* model, ViTConfig config) {
-    int rows = config.hidden_dim;
-    int cols = 3 * config.hidden_dim;
+void visualize_attn_qkv_weight(const ViT* model) {
+    int rows = model->config.hidden_dim;
+    int cols = 3 * model->config.hidden_dim;
     print_matrix(model->params.attn_qkv_weight, rows, cols, "Attention QKV Weights");
 }
 
-void visualize_attn_qkv_bias(const ViT* model, ViTConfig config) {
+void visualize_attn_qkv_bias(const ViT* model) {
     int rows = 1;
-    int cols = 3 * config.hidden_dim;
+    int cols = 3 * model->config.hidden_dim;
     print_matrix(model->params.attn_qkv_bias, rows, cols, "Attention QKV Biases");
 }
 
-void visualize_attn_proj_weight(const ViT* model, ViTConfig config) {
-    int rows = config.hidden_dim;
-    int cols = config.hidden_dim;
+void visualize_attn_proj_weight(const ViT* model) {
+    int rows = model->config.hidden_dim;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.attn_proj_weight, rows, cols, "Attention Projection Weights");
 }
 
-void visualize_attn_proj_bias(const ViT* model, ViTConfig config) {
+void visualize_attn_proj_bias(const ViT* model) {
     int rows = 1;
-    int cols = config.hidden_dim;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.attn_proj_bias, rows, cols, "Attention Projection Biases");
 }
 
-void visualize_mlp_fc1_weight(const ViT* model, ViTConfig config) {
-    int rows = config.hidden_dim;
-    int cols = 4 * config.hidden_dim;
+void visualize_mlp_fc1_weight(const ViT* model) {
+    int rows = model->config.hidden_dim;
+    int cols = 4 * model->config.hidden_dim;
     print_matrix(model->params.mlp_fc1_weight, rows, cols, "MLP First Layer Weights");
 }
 
-void visualize_mlp_fc1_bias(const ViT* model, ViTConfig config) {
+void visualize_mlp_fc1_bias(const ViT* model) {
     int rows = 1;
-    int cols = 4 * config.hidden_dim;
+    int cols = 4 * model->config.hidden_dim;
     print_matrix(model->params.mlp_fc1_bias, rows, cols, "MLP First Layer Biases");
 }
 
-void visualize_mlp_fc2_weight(const ViT* model, ViTConfig config) {
-    int rows = 4 * config.hidden_dim;
-    int cols = config.hidden_dim;
+void visualize_mlp_fc2_weight(const ViT* model) {
+    int rows = 4 * model->config.hidden_dim;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.mlp_fc2_weight, rows, cols, "MLP Second Layer Weights");
 }
 
-void visualize_mlp_fc2_bias(const ViT* model, ViTConfig config) {
+void visualize_mlp_fc2_bias(const ViT* model) {
     int rows = 1;
-    int cols = config.hidden_dim;
+    int cols = model->config.hidden_dim;
     print_matrix(model->params.mlp_fc2_bias, rows, cols, "MLP Second Layer Biases");
 }
 
-void visualize_head_weight(const ViT* model, ViTConfig config) {
-    int rows = config.hidden_dim;
-    int cols = config.num_classes;
+void visualize_head_weight(const ViT* model) {
+    int rows = model->config.hidden_dim;
+    int cols = model->config.num_classes;
     print_matrix(model->params.head_weight, rows, cols, "Classification Head Weights");
 }
 
-void visualize_head_bias(const ViT* model, ViTConfig config) {
+void visualize_head_bias(const ViT* model) {
     int rows = 1;
-    int cols = config.num_classes;
+    int cols = model->config.num_classes;
     print_matrix(model->params.head_bias, rows, cols, "Classification Head Biases");
 }
 
 // Wrapper function to visualize all parameters
-void visualize_vit_parameters(const ViT* model, ViTConfig config) {
+void visualize_vit_parameters(const ViT* model) {
     printf("************************************\n");
     printf("Visualizing ViT Model Parameters\n");
     printf("************************************\n");
 
-    visualize_patch_proj_weight(model, config);
-    visualize_patch_proj_bias(model, config);
-    visualize_pos_emb(model, config);
-    visualize_attn_qkv_weight(model, config);
-    visualize_attn_qkv_bias(model, config);
-    visualize_attn_proj_weight(model, config);
-    visualize_attn_proj_bias(model, config);
-    visualize_mlp_fc1_weight(model, config);
-    visualize_mlp_fc1_bias(model, config);
-    visualize_mlp_fc2_weight(model, config);
-    visualize_mlp_fc2_bias(model, config);
-    visualize_head_weight(model, config);
-    visualize_head_bias(model, config);
+    visualize_patch_proj_weight(model);
+    visualize_patch_proj_bias(model);
+    visualize_pos_emb(model);
+    visualize_attn_qkv_weight(model);
+    visualize_attn_qkv_bias(model);
+    visualize_attn_proj_weight(model);
+    visualize_attn_proj_bias(model);
+    visualize_mlp_fc1_weight(model);
+    visualize_mlp_fc1_bias(model);
+    visualize_mlp_fc2_weight(model);
+    visualize_mlp_fc2_bias(model);
+    visualize_head_weight(model);
+    visualize_head_bias(model);
 
     printf("************************************\n");
     printf("Visualization complete.\n");
@@ -451,25 +542,31 @@ int main() {
     // Initialize model configuration
     ViTConfig config = {
         .image_size = 4,
+        .channels = 2,
         .patch_size = 1,
         .num_layers = 1,
-        .num_heads = 1,
+        .num_heads = 2,
         .hidden_dim = 2,
         .num_classes = 2
     };
 
     // Model definition
     ViT model;
-    vit_alloc(&model, config, 0);
-    vit_init(&model, config, 1);
+    model.config = config;
+    vit_alloc(&model, 0);
+    vit_init(&model, 0);
+    visualize_vit_parameters(&model);
 
-    visualize_vit_parameters(&model, config);
-
+    size_t img_mem_size = config.channels * config.image_size * config.image_size * sizeof(float);
     // Create dummy input image (32x32 RGB)
-    float* image = malloc(3 * 32 * 32 * sizeof(float));
+    float* image = malloc(img_mem_size);
     
-    memset(image, 0, 3*32*32*sizeof(float));  // All black image
-    free(model.params_memory);
+    memset(image, 0, img_mem_size);  // All black image
 
+    // Run forward pass
+    float* logits = vit_forward(&model, image);
+    free(logits);
+    free(image);
+    free(model.params_memory);
     return 0;
 }
