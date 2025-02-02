@@ -93,7 +93,13 @@ typedef struct {
 // ----------------------------------------------------------------------------
 // Model Initialization
 
-void vit_init(ViT* model, ViTConfig config) {
+
+void vit_init(ViT* model, ViTConfig config, int verbose) {
+    if (verbose) {
+        printf("************************************\n");
+        printf("Vision Transformer (ViT) - Initialization\n");
+        printf("************************************\n");
+    }
     // Calculate parameter sizes
     int P = config.patch_size;
     int C = 3;  // RGB channels
@@ -124,51 +130,78 @@ void vit_init(ViT* model, ViTConfig config) {
     
     mallocCheck(model->params_memory, total_size * sizeof(float));
     float* ptr = model->params_memory;
-    
+
     // Assign parameter pointers
+    if (verbose) printf("Allocating memory for patch projection weights: %ld bytes\n", C*P*P*D*sizeof(float));
     model->params.patch_proj_weight = ptr;
     ptr += C*P*P*D;
 
+    if (verbose) printf("Allocating memory for patch projection biases: %ld bytes\n", D*sizeof(float));
     model->params.patch_proj_bias = ptr;
     ptr += D;
 
+    if (verbose) printf("Allocating memory for positional embeddings: %ld bytes\n", (N+1)*D*sizeof(float));
     model->params.pos_emb = ptr;            
     ptr += (N+1)*D;
 
+    if (verbose) printf("====================================\n");
+    if (verbose) printf("Allocating memory for attention QKV weights: %ld bytes\n", D*3*D*sizeof(float));
     model->params.attn_qkv_weight = ptr;    
     ptr += D*3*D;
 
+    if (verbose) printf("Allocating memory for attention QKV biases: %ld bytes\n", 3*D*sizeof(float));
     model->params.attn_qkv_bias = ptr;      
     ptr += 3*D;
 
+    if (verbose) printf("Allocating memory for attention projection weights: %ld bytes\n", D*D*sizeof(float));
     model->params.attn_proj_weight = ptr;   
     ptr += D*D;
 
+    if (verbose) printf("Allocating memory for attention projection biases: %ld bytes\n", D*sizeof(float));
     model->params.attn_proj_bias = ptr;     
     ptr += D;
 
+    if (verbose) printf("====================================\n");
+    if (verbose) printf("Allocating memory for MLP first layer weights: %ld bytes\n", D*4*D*sizeof(float));
     model->params.mlp_fc1_weight = ptr;     
     ptr += D*4*D;
 
+    if (verbose) printf("Allocating memory for MLP first layer biases: %ld bytes\n", 4*D*sizeof(float));
     model->params.mlp_fc1_bias = ptr;       
     ptr += 4*D;
 
+    if (verbose) printf("Allocating memory for MLP second layer weights: %ld bytes\n", 4*D*D*sizeof(float));
     model->params.mlp_fc2_weight = ptr;     
     ptr += 4*D*D;
 
+    if (verbose) printf("Allocating memory for MLP second layer biases: %ld bytes\n", D*sizeof(float));
     model->params.mlp_fc2_bias = ptr;       
     ptr += D;
 
+    if (verbose) printf("====================================\n");
+    if (verbose) printf("Allocating memory for classification head weights: %ld bytes\n", D*config.num_classes*sizeof(float));
     model->params.head_weight = ptr;        
     ptr += D*config.num_classes;
+
+    if (verbose) printf("Allocating memory for classification head biases: %ld bytes\n", config.num_classes*sizeof(float));
     model->params.head_bias = ptr;
 
+    // Testing memory allocation
+    if (ptr - model->params_memory != total_size - config.num_classes) {
+        fprintf(stderr, "Memory allocation error: expected %ld bytes, but allocated %ld bytes\n", total_size - config.num_classes, ptr - model->params_memory);
+        exit(EXIT_FAILURE);
+    } else if (verbose) {
+        printf("************************************\n");
+        printf("Memory allocation successful.\n");
+        printf("************************************\n");
+    }
+
     // Initialize parameters (simplified for MVP)
-    // TODO: Look into initialization schemes (Gaussain )
+    // TODO: Look into initialization schemes (Gaussian)
     // In real implementation, use proper initialization schemes 
-    memset(model->params_memory, 0, total_size * sizeof(float));
-    memPrint(model->params_memory, total_size);
+    memset(model->params_memory, 0.0, total_size * sizeof(float));
 }
+
 
  
 // ----------------------------------------------------------------------------
@@ -187,7 +220,7 @@ int main() {
 
     // Model definition
     ViT model;
-    vit_init(&model, config);
+    vit_init(&model, config, 1);
 
     free(model.params_memory);
 
