@@ -91,10 +91,9 @@ typedef struct {
 
 
 // ----------------------------------------------------------------------------
-// Model Initialization
+// Model Allocation
 
-
-void vit_init(ViT* model, ViTConfig config, int verbose) {
+void vit_alloc(ViT* model, ViTConfig config, int verbose) {
     if (verbose) {
         printf("************************************\n");
         printf("Vision Transformer (ViT) - Initialization\n");
@@ -190,7 +189,7 @@ void vit_init(ViT* model, ViTConfig config, int verbose) {
     if (ptr - model->params_memory != total_size - config.num_classes) {
         fprintf(stderr, "Memory allocation error: expected %ld bytes, but allocated %ld bytes\n", total_size - config.num_classes, ptr - model->params_memory);
         exit(EXIT_FAILURE);
-    } else if (verbose) {
+    } else {
         printf("************************************\n");
         printf("Memory allocation successful.\n");
         printf("************************************\n");
@@ -203,7 +202,128 @@ void vit_init(ViT* model, ViTConfig config, int verbose) {
 }
 
 
- 
+// ----------------------------------------------------------------------------
+// Parameter Initialization
+
+// Helper function to initialize an array with random values between 0 and 1
+void initialize_random(float* array, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        array[i] = (float)rand() / (float)RAND_MAX;  // Random value between 0 and 1
+    }
+}
+
+// Component initialization functions
+void init_patch_proj_weight(float* weights, size_t size) {
+    initialize_random(weights, size);
+}
+
+void init_patch_proj_bias(float* biases, size_t size) {
+    initialize_random(biases, size);
+}
+
+void init_pos_emb(float* pos_emb, size_t size) {
+    initialize_random(pos_emb, size);
+}
+
+void init_attn_qkv_weight(float* weights, size_t size) {
+    initialize_random(weights, size);
+}
+
+void init_attn_qkv_bias(float* biases, size_t size) {
+    initialize_random(biases, size);
+}
+
+void init_attn_proj_weight(float* weights, size_t size) {
+    initialize_random(weights, size);
+}
+
+void init_attn_proj_bias(float* biases, size_t size) {
+    initialize_random(biases, size);
+}
+
+void init_mlp_fc1_weight(float* weights, size_t size) {
+    initialize_random(weights, size);
+}
+
+void init_mlp_fc1_bias(float* biases, size_t size) {
+    initialize_random(biases, size);
+}
+
+void init_mlp_fc2_weight(float* weights, size_t size) {
+    initialize_random(weights, size);
+}
+
+void init_mlp_fc2_bias(float* biases, size_t size) {
+    initialize_random(biases, size);
+}
+
+void init_head_weight(float* weights, size_t size) {
+    initialize_random(weights, size);
+}
+
+void init_head_bias(float* biases, size_t size) {
+    initialize_random(biases, size);
+}
+
+// Wrapper function to initialize the entire model parameters
+void vit_init(ViT* model, ViTConfig config, int verbose) {
+    if (verbose) {
+        printf("************************************\n");
+        printf("Vision Transformer (ViT) - Random Initialization\n");
+        printf("************************************\n");
+    }
+
+    // Seed the random number generator
+    srand(time(NULL));
+
+    // Initialize each component
+    if (verbose) printf("Initializing patch projection weights\n");
+    init_patch_proj_weight(model->params.patch_proj_weight, config.patch_size * config.patch_size * 3 * config.hidden_dim);
+
+    if (verbose) printf("Initializing patch projection biases\n");
+    init_patch_proj_bias(model->params.patch_proj_bias, config.hidden_dim);
+
+    if (verbose) printf("Initializing positional embeddings\n");
+    init_pos_emb(model->params.pos_emb, (config.image_size / config.patch_size) * (config.image_size / config.patch_size) + 1 * config.hidden_dim);
+
+    if (verbose) printf("====================================\n");
+    if (verbose) printf("Initializing attention QKV weights\n");
+    init_attn_qkv_weight(model->params.attn_qkv_weight, config.hidden_dim * 3 * config.hidden_dim);
+
+    if (verbose) printf("Initializing attention QKV biases\n");
+    init_attn_qkv_bias(model->params.attn_qkv_bias, 3 * config.hidden_dim);
+
+    if (verbose) printf("Initializing attention projection weights\n");
+    init_attn_proj_weight(model->params.attn_proj_weight, config.hidden_dim * config.hidden_dim);
+
+    if (verbose) printf("Initializing attention projection biases\n");
+    init_attn_proj_bias(model->params.attn_proj_bias, config.hidden_dim);
+
+    if (verbose) printf("====================================\n");
+    if (verbose) printf("Initializing MLP first layer weights\n");
+    init_mlp_fc1_weight(model->params.mlp_fc1_weight, config.hidden_dim * 4 * config.hidden_dim);
+
+    if (verbose) printf("Initializing MLP first layer biases\n");
+    init_mlp_fc1_bias(model->params.mlp_fc1_bias, 4 * config.hidden_dim);
+
+    if (verbose) printf("Initializing MLP second layer weights\n");
+    init_mlp_fc2_weight(model->params.mlp_fc2_weight, 4 * config.hidden_dim * config.hidden_dim);
+
+    if (verbose) printf("Initializing MLP second layer biases\n");
+    init_mlp_fc2_bias(model->params.mlp_fc2_bias, config.hidden_dim);
+
+    if (verbose) printf("====================================\n");
+    if (verbose) printf("Initializing classification head weights\n");
+    init_head_weight(model->params.head_weight, config.hidden_dim * config.num_classes);
+
+    if (verbose) printf("Initializing classification head biases\n");
+    init_head_bias(model->params.head_bias, config.num_classes);
+
+    printf("************************************\n");
+    printf("Parameter initialization successful.\n");
+    printf("************************************\n");
+}
+
 // ----------------------------------------------------------------------------
 // Main Program
 
@@ -220,8 +340,13 @@ int main() {
 
     // Model definition
     ViT model;
+    vit_alloc(&model, config, 0);
     vit_init(&model, config, 1);
 
+    // Create dummy input image (32x32 RGB)
+    float* image = malloc(3 * 32 * 32 * sizeof(float));
+    
+    memset(image, 0, 3*32*32*sizeof(float));  // All black image
     free(model.params_memory);
 
     return 0;
