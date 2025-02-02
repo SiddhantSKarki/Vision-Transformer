@@ -1,0 +1,8 @@
+__pycache__
+.ipynb_checkpoints
+checkpoints
+cifar10
+cifar100
+brain_tumor_dataset
+logs
+vit_ds.c
