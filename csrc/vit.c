@@ -99,45 +99,8 @@ void patch_embed(float* out, const float* image,
     int N = (H / P) * (W / P);
     int pp = P * P;
     
-    #pragma omp parallel for collapse(2)
-    for (int y = 0; y < H/P; y++) {
-        for (int x = 0; x < W/P; x++) {
-            float* patch = out + (y*(W/P) + x)*D;
-            
-            // Initialize with bias
-            memcpy(patch, bias, D * sizeof(float));
-            
-            // Convolution-style patch extraction
-            for (int c = 0; c < C; c++) {
-                for (int dy = 0; dy < P; dy++) {
-                    for (int dx = 0; dx < P; dx++) {
-                        float pixel = image[c*H*W + (y*P+dy)*W + (x*P+dx)];
-                        const float* w = weight + (c*pp + dy*P + dx)*D;
-                        
-                        for (int d = 0; d < D; d++) {
-                            patch[d] += pixel * w[d];
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Add positional embeddings to patch embeddings
-void add_position_embeddings(float* embeddings, const float* pos_emb, 
-                            int B, int N, int D) {
-    #pragma omp parallel for collapse(2)
-    for (int b = 0; b < B; b++) {
-        for (int i = 0; i < N; i++) {
-            float* emb = embeddings + b*N*D + i*D;
-            const float* pos = pos_emb + i*D;
-            
-            for (int d = 0; d < D; d++) {
-                emb[d] += pos[d];
-            }
-        }
-    }
+    // #pragma omp parallel for collapse(2)
+    // TODO: Implement single threaded convolution
 }
 
 // ----------------------------------------------------------------------------
@@ -154,8 +117,9 @@ float* vit_forward(ViT* model, const float* image) {
 
     // Allocate activation memory
     float* patches, * attn_out, * mlp_out, * logits;
-    printf("Allocating: %ld\n", N*D*sizeof(float));
+    // printf("Allocating: %ld\n", N*D*sizeof(float));
     mallocCheck(patches, N*D*sizeof(float));
+    // mallocCheck(attn_out, N*D*sizeof(float));
 
     // 1. Patch embedding
     patch_embed(patches, image,
@@ -164,7 +128,10 @@ float* vit_forward(ViT* model, const float* image) {
                C, H, W, P, D);
 
     // 2. Add positional embeddings
-    add_position_embeddings(patches, model->params.pos_emb, 1, N, D);
+    // add_position_embeddings(patches, model->params.pos_emb, 1, N, D);
+
+    // Multi-head attention
+    // attention_forward(attn_out, patches, 1, N, D, c.num_heads);
 
     // Cleanup intermediate buffers
     // free(patches);
@@ -186,7 +153,7 @@ void vit_alloc(ViT* model, int verbose) {
     ViTConfig config = model->config;
     // Calculate parameter sizes
     int P = config.patch_size;
-    int C = 3;  // RGB channels
+    int C = config.channels;  // RGB channels
     int N = (config.image_size / P) * (config.image_size / P);
     int D = config.hidden_dim;
     
@@ -297,6 +264,16 @@ void initialize_random(float* array, size_t size) {
     }
 }
 
+void initialize_zeros(float* array, size_t size) {
+    memset(array, 0, size * sizeof(float));
+}
+
+void initialize_ones(float* array, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        array[i] = 1.0f;
+    }
+}
+
 // Component initialization functions
 void init_patch_proj_weight(float* weights, size_t size) {
     initialize_random(weights, size);
@@ -355,7 +332,7 @@ void vit_init(ViT* model, int verbose) {
     // Calculate parameter sizes
     ViTConfig config = model->config;
     int P = config.patch_size;
-    int C = 3;  // RGB channels
+    int C = model->config.channels;  // RGB channels
     int N = (config.image_size / P) * (config.image_size / P);
     int D = config.hidden_dim;
     if (verbose) {
@@ -433,7 +410,7 @@ void print_matrix(const float* matrix, int rows, int cols, const char* name) {
 
 // Component-specific visualization functions
 void visualize_patch_proj_weight(const ViT* model) {
-    int rows = model->config.patch_size * model->config.patch_size * 3;
+    int rows = model->config.patch_size * model->config.patch_size * model->config.channels;
     int cols = model->config.hidden_dim;
     print_matrix(model->params.patch_proj_weight, rows, cols, "Patch Projection Weights");
 }
@@ -452,13 +429,13 @@ void visualize_pos_emb(const ViT* model) {
 
 void visualize_attn_qkv_weight(const ViT* model) {
     int rows = model->config.hidden_dim;
-    int cols = 3 * model->config.hidden_dim;
+    int cols = model->config.channels * model->config.hidden_dim;
     print_matrix(model->params.attn_qkv_weight, rows, cols, "Attention QKV Weights");
 }
 
 void visualize_attn_qkv_bias(const ViT* model) {
     int rows = 1;
-    int cols = 3 * model->config.hidden_dim;
+    int cols = model->config.channels * model->config.hidden_dim;
     print_matrix(model->params.attn_qkv_bias, rows, cols, "Attention QKV Biases");
 }
 
@@ -542,30 +519,48 @@ int main() {
     // Initialize model configuration
     ViTConfig config = {
         .image_size = 4,
-        .channels = 2,
-        .patch_size = 1,
+        .channels = 1,
+        .patch_size = 2,
         .num_layers = 1,
         .num_heads = 2,
-        .hidden_dim = 2,
+        .hidden_dim = 5,
         .num_classes = 2
     };
+
+    // Only for testing purposes
+    // ---------------------------------------------------
+    int P = config.patch_size; // Patch Size
+    int C = config.channels;  // RGB channels
+    int H = config.image_size; // Height
+    int W = config.image_size; // Width
+    int D = config.hidden_dim; // Patch Embedding Dimension
+    int N = (H/P) * (W/P); // Number of Patches
+    // ---------------------------------------------------
 
     // Model definition
     ViT model;
     model.config = config;
     vit_alloc(&model, 0);
     vit_init(&model, 0);
-    visualize_vit_parameters(&model);
 
     size_t img_mem_size = config.channels * config.image_size * config.image_size * sizeof(float);
-    // Create dummy input image (32x32 RGB)
     float* image = malloc(img_mem_size);
+    if (!image) {
+        fprintf(stderr, "Memory allocation failed for input image\n");
+        return 1;
+    }
     
-    memset(image, 0, img_mem_size);  // All black image
+    initialize_ones(image, img_mem_size/sizeof(float));
 
     // Run forward pass
-    float* logits = vit_forward(&model, image);
-    free(logits);
+    float* patch_embds = vit_forward(&model, image);
+    
+    visualize_patch_proj_weight(&model);
+    visualize_patch_proj_bias(&model);
+    print_matrix(image, W, H, "Image");
+    print_matrix(patch_embds, N, D, "Patch Embeddings");
+    
+    free(patch_embds);
     free(image);
     free(model.params_memory);
     return 0;
