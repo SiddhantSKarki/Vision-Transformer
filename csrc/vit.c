@@ -20,6 +20,10 @@
 #include <omp.h>
 #endif
 
+// Forward declarations
+void initialize_random(float* array, size_t size);
+void print_matrix(const float* matrix, int rows, int cols, const char* name);
+
 // ----------------------------------------------------------------------------
 // Utility Macros
 #define mallocCheck(ptr, size) \
@@ -173,39 +177,87 @@ void patch_embed(float* out, const float* image, const ViT* model,
     }
 }
 
+// Add positional embeddings to patch embeddings
+void add_position_embeddings(float* embeddings, const float* pos_emb, 
+                            int B, int N, int D) {
+    #pragma omp parallel for collapse(2)
+    for (int b = 0; b < B; b++) {
+        for (int i = 0; i < (N + 1); i++) {
+            size_t start_idx = b*(N+1)*D + i*D;
+            size_t end_idx = start_idx + D;
+            for (int d = start_idx; d < end_idx; d++) {
+                embeddings[d] += pos_emb[d];
+            }
+        }
+    }
+}
+
+void add_cls_token(float* concat_embd, const float* cls_token, const float* patches,
+    const ViT* model, int B, int N, int D) {
+
+    #pragma omp parallel for
+    for (int b = 0; b < B; b++) {
+        for (int j = 0; j < D; j++) {
+            size_t idx = b*N*D + j;
+            concat_embd[idx] = cls_token[idx];
+        }
+    }
+
+    #pragma omp parallel for collapse(2)
+    for (int b = 0; b < B; b++) {
+        for (int i = 1; i < (N+1); i++) {
+            size_t start_idx = b*N*D + i*D;
+            size_t end_idx = start_idx + D;
+            for (int d = start_idx; d < end_idx; d++) {
+                concat_embd[d] += patches[d-D];
+            }
+        }
+    }
+
+}
+
 // ----------------------------------------------------------------------------
 // Forward Pass
 
 float* vit_forward(ViT* model, const float* image) {
     ViTConfig c = model->config;
     int P = c.patch_size; // Patch Size
-    int C = c.channels;  // RGB channels
+    int C = c.channels;  // RGB/BW channels
     int H = c.image_size; // Height
     int W = c.image_size; // Width
     int D = c.hidden_dim; // Patch Embedding Dimension
     int N = (H/P) * (W/P); // Number of Patches
 
     // Allocate activation memory
-    float* patches, * attn_out, * mlp_out, * logits;
+    float* patches, *cls_token, *concat_embd, * attn_out, * mlp_out, * logits;
     // printf("Allocating: %ld\n", N*D*sizeof(float));
     mallocCheck(patches, N*D*sizeof(float));
-    // mallocCheck(attn_out, N*D*sizeof(float));
+    mallocCheck(cls_token, 1*D*sizeof(float));  // Class Token Vector
+    mallocCheck(concat_embd, (N+1)*D*sizeof(float)); 
 
     // 1. Patch embedding
     patch_embed(patches, image,
                model,
                C, H, W, P, D);
+    initialize_random(cls_token, D);
+    
+
+    add_cls_token(concat_embd, cls_token, patches, model, 1, N, D);
+    // print_matrix(cls_token, 1, D, "CLS TOKEN");
+    // print_matrix(concat_embd, N+1, D, "Patch Embd before Pos");
+
 
     // 2. Add positional embeddings
-    // add_position_embeddings(patches, model->params.pos_emb, 1, N, D);
+    add_position_embeddings(concat_embd, model->params.pos_emb, 1, N, D);
 
     // Multi-head attention
     // attention_forward(attn_out, patches, 1, N, D, c.num_heads);
 
     // Cleanup intermediate buffers
-    // free(patches);
+    free(patches);
+    free(cls_token);
 
-    return patches;
+    return concat_embd;
 }
 
 // ----------------------------------------------------------------------------
@@ -597,12 +649,12 @@ void visualize_vit_parameters(const ViT* model) {
 int main() {
     // Initialize model configuration
     ViTConfig config = {
-        .image_size = 512,
+        .image_size = 8,
         .channels = 1,
-        .patch_size = 32,
+        .patch_size = 2,
         .num_layers = 1,
         .num_heads = 2,
-        .hidden_dim = 128,
+        .hidden_dim = 4,
         .num_classes = 2
     };
 
@@ -629,7 +681,7 @@ int main() {
         return 1;
     }
     
-    initialize_ones(image, img_mem_size/sizeof(float));
+    initialize_random(image, img_mem_size/sizeof(float));
 
     // Run forward pass
     float* patch_embds = vit_forward(&model, image);
@@ -637,7 +689,8 @@ int main() {
     visualize_patch_proj_weight(&model);
     visualize_patch_proj_bias(&model);
     print_matrix(image, W*C, H, "Image");
-    print_matrix(patch_embds, N, D, "Patch Embeddings");
+    visualize_pos_emb(&model);
+    print_matrix(patch_embds, N+1, D, "CLS+Patch Embeddings");
 
     free(patch_embds);
     free(image);
