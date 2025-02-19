@@ -597,12 +597,12 @@ void visualize_vit_parameters(const ViT* model) {
 int main() {
     // Initialize model configuration
     ViTConfig config = {
-        .image_size = 1,
+        .image_size = 512,
         .channels = 1,
-        .patch_size = 1,
+        .patch_size = 32,
         .num_layers = 1,
         .num_heads = 2,
-        .hidden_dim = 8,
+        .hidden_dim = 128,
         .num_classes = 2
     };
 
@@ -638,7 +638,6 @@ int main() {
     visualize_patch_proj_bias(&model);
     print_matrix(image, W*C, H, "Image");
     print_matrix(patch_embds, N, D, "Patch Embeddings");
-    // printf("%f\n", __IMAGE(8, 0, image, config));
 
     free(patch_embds);
     free(image);
