@@ -1,51 +1,38 @@
 # Vision Transformer from Scratch (Code available for Transformer Encoder + ViT)
+## Vision Transformer (Python)
 
-This repository contains the implementation of a Vision Transformer (ViT) model for brain tumor classification. The project includes scripts for data preprocessing, model training, and analysis, along with configuration files to replicate the results.
+### Directory Structure
 
-## Directory Structure
+- **src/BrainTumorDataset.py**: Script for loading and preprocessing the brain tumor dataset.
+- **src/requirements.txt**: File listing the required Python libraries and dependencies.
+- **src/train.py**: Script to train the Vision Transformer model on the dataset.
+- **src/VisionTransformer/**: Directory containing the core implementation of the Vision Transformer.
+  - **src/VisionTransformer/config.py**: Configuration file with model and training parameters.
+  - **src/VisionTransformer/transformer.py**: Implementation of the transformer architecture.
+  - **src/VisionTransformer/vit.py**: Implementation of the Vision Transformer (ViT) model.
+  - **src/VisionTransformer/__init__.py**: Module initialization file.
+- **src/vit.ipynb**: Jupyter Notebook for exploratory data analysis, model visualization, and fine-tuning.
 
-- **BrainTumorDataset.py**: Script for loading and preprocessing the brain tumor dataset.
-- **requirements.txt**: File listing the required Python libraries and dependencies.
-- **train.py**: Script to train the Vision Transformer model on the dataset.
-- **VisionTransformer/**: Directory containing the core implementation of the Vision Transformer.
-  - **config.py**: Configuration file with model and training parameters.
-  - **transformer.py**: Implementation of the transformer architecture.
-  - **vit.py**: Implementation of the Vision Transformer (ViT) model.
-  - **__init__.py**: Module initialization file.
-- **vit.ipynb**: Jupyter Notebook for exploratory data analysis, model visualization, and fine-tuning.
+### How to Run
 
-## Prerequisites
+#### 1. Prepare the Dataset
 
-### Python Version
-- Python 3.12 or later is required.
-
-### Dependencies
-Install the required libraries using the following command:
-```bash
-pip install -r requirements.txt
-
-```
-
-# How to Run
-
-## 1. Prepare the Dataset
-
-Ensure your brain tumor dataset is organized in a structure compatible with the `BrainTumorDataset.py` script.  
+Ensure your brain tumor dataset is organized in a structure compatible with the `src/BrainTumorDataset.py` script.  
 This script handles data loading and preprocessing, including standard augmentations.
 
-## 2. Train the Model
+#### 2. Train the Model
 
-Run the `train.py` script to train the Vision Transformer:
+Run the `src/train.py` script to train the Vision Transformer:
 
 ```bash
-python train.py
+python src/train.py
 ```
 
 Checkpoints and training logs will be saved as specified in the configuration.
 
-## 3. Analyze Results
+#### 3. Analyze Results
 
-Use the `vit.ipynb` Jupyter Notebook for:
+Use the `src/vit.ipynb` Jupyter Notebook for:
 
 - Visualizing the dataset and model predictions.
 - Analyzing model attention maps.
@@ -53,32 +40,38 @@ Use the `vit.ipynb` Jupyter Notebook for:
 
 ---
 
-# Project Components
+## Vision Transformer (C)
 
-## VisionTransformer Module
+### Directory Structure
 
-- **`config.py`**: Contains model hyperparameters such as learning rate, batch size, and architecture details.
-- **`transformer.py`**: Core transformer architecture implementation.
-- **`vit.py`**: Vision Transformer (ViT) model combining the transformer and patch embedding logic.
+There is only one file: **csrc/vit.c** which the user needs to run.
 
-## BrainTumorDataset.py
+### How to Run
 
-- Prepares the dataset by handling data augmentation and preprocessing.
-- Includes functionality to split the data into training, validation, and test sets.
+#### 1. Prepare the Dataset
 
-## train.py
+Ensure your brain tumor dataset is organized in a structure compatible with the `csrc/BrainTumorDataset.c` script.  
+This script handles data loading and preprocessing, including standard augmentations.
 
-- Loads the dataset using `BrainTumorDataset.py`.
-- Initializes and trains the Vision Transformer using the configurations from `VisionTransformer/config.py`.
-- Tracks performance metrics such as loss and accuracy.
+#### 2. Train the Model
 
----
+Run the `csrc/train.c` script to train the Vision Transformer:
 
-# Outputs
+```bash
+gcc csrc/train.c -o train
+./train
+```
 
-- Model training checkpoints (if implemented in `train.py`).
-- Training and validation accuracy and loss logs.
-- Visualizations of predictions and attention maps in the Jupyter Notebook.
+Checkpoints and training logs will be saved as specified in the configuration.
+
+#### 3. Analyze Results
+
+Use the `csrc/vit.ipynb` Jupyter Notebook for:
+
+- Visualizing the dataset and model predictions.
+- Analyzing model attention maps.
+- Fine-tuning model configurations interactively.
+This repository contains the implementation of a Vision Transformer (ViT) model for brain tumor classification. The project includes scripts for data preprocessing, model training, and analysis, along with configuration files to replicate the results.
 
 ---
 
