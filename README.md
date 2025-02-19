@@ -89,4 +89,4 @@ This project is licensed under the MIT License. See the LICENSE file for more de
 
 # Acknowledgements
 
-Special thanks to the authors of Vision Transformer and the research community for inspiring this implementation.
+Special thanks to the authors of Vision Transformer, Dr. Andrej Karpathy and the research community for inspiring this implementation.
