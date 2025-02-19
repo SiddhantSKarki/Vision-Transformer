@@ -44,6 +44,69 @@
 
 #define RANDOM_STATE 69
 
+#define __IMAGE(i_p, j_dim, image, config) ({ \
+    size_t img_dims = config.image_size; \
+    size_t p_size = config.patch_size; \
+    size_t p_row = (i_p / (img_dims / p_size)); \
+    size_t p_col = i_p % (img_dims / p_size); \
+    size_t init_idx = (p_row * img_dims + p_col) * p_size; \
+    size_t dim_idx = (j_dim / p_size) * img_dims; \
+    size_t offset = j_dim % p_size; \
+    size_t idx = init_idx + dim_idx + offset; \
+    if (idx >= img_dims * img_dims) { \
+        fprintf(stderr, "Index out of bounds at IMAGE %s:%d\n", __FILE__, __LINE__); \
+        exit(EXIT_FAILURE); \
+    } \
+    image[idx]; \
+})
+
+#define __KERNEL(j_kernel, ker_dim, model) ({ \
+    float* wei = model.params.patch_proj_weight; \
+    size_t p_size = model.config.patch_size; \
+    size_t weight_dims_y = model.config.hidden_dim * p_size; \
+    size_t ker_row = j_kernel * p_size; \
+    size_t dim_idx = (ker_dim / p_size) * weight_dims_y; \
+    size_t offset = ker_dim % p_size; \
+    size_t idx = ker_row + dim_idx + offset; \
+    if (idx >= model.config.channels * p_size * weight_dims_y) { \
+        fprintf(stderr, "Index out of bounds at KERNEL WEIGHT %s:%d\n", __FILE__, __LINE__); \
+        exit(EXIT_FAILURE); \
+    } \
+    wei[idx]; \
+})
+
+#define __KERNEL_BIAS(j_kernel, model) ({ \
+    float* bias = model.params.patch_proj_bias; \
+    size_t p_size = model.config.patch_size; \
+    size_t weight_dims_y = model.config.hidden_dim; \
+    size_t ker_row = j_kernel; \
+    size_t idx = ker_row; \
+    if (idx >= weight_dims_y) { \
+        fprintf(stderr, "Index out of bounds at KERNEL BIAS %s:%d\n", __FILE__, __LINE__); \
+        exit(EXIT_FAILURE); \
+    } \
+    bias[idx]; \
+})
+
+#define __PROJ_PATCH(i_patch, j_kernel, model, out) ({ \
+    size_t cols = model.config.hidden_dim; \
+    size_t idx = cols*i_patch + j_kernel; \
+    &out[idx]; \
+})
+
+
+// #TODO: make things work for multiple channels  
+#define ___CONVOLUTION(image, model, out, i_patch, j_kernel) ({ \
+    size_t kernel_dims = model.config.patch_size * model.config.patch_size; \
+    float result = 0.0; \
+    for (size_t idx = 0; idx < kernel_dims; ++idx) { \
+        result += __IMAGE(i_patch, idx, image, model.config) * __KERNEL(j_kernel, idx, model); \
+    } \
+    result += __KERNEL_BIAS(j_kernel, model); \
+    *(__PROJ_PATCH(i_patch, j_kernel, model, out)) = result; \
+})
+
+    // __PROJ_PATCH(i_patch, j_kernel, model); 
 // ----------------------------------------------------------------------------
 // Core Components
 typedef struct {
@@ -93,14 +156,19 @@ typedef struct {
 // Layer Implementations
 
 // Patch embedding: Convert image to sequence of patch embeddings
-void patch_embed(float* out, const float* image, 
-                const float* weight, const float* bias,
+void patch_embed(float* out, const float* image, const ViT* model,
                 int C, int H, int W, int P, int D) {
     int N = (H / P) * (W / P);
     int pp = P * P;
-    
+
+    for (int i_patch = 0; i_patch < N; ++i_patch) {
+        for (int j_kernel = 0; j_kernel < D; ++j_kernel) {
+            ___CONVOLUTION(image, (*model), out, i_patch, j_kernel);
+        }
+    }
     // #pragma omp parallel for collapse(2)
     // TODO: Implement single threaded convolution
+
 }
 
 // ----------------------------------------------------------------------------
@@ -123,8 +191,7 @@ float* vit_forward(ViT* model, const float* image) {
 
     // 1. Patch embedding
     patch_embed(patches, image,
-               model->params.patch_proj_weight,
-               model->params.patch_proj_bias,
+               model,
                C, H, W, P, D);
 
     // 2. Add positional embeddings
@@ -410,13 +477,25 @@ void print_matrix(const float* matrix, int rows, int cols, const char* name) {
 
 // Component-specific visualization functions
 void visualize_patch_proj_weight(const ViT* model) {
-    int rows = model->config.patch_size * model->config.patch_size * model->config.channels;
-    int cols = model->config.hidden_dim;
+    // This is importation for the convolution operation
+    /* Assumption: 
+        The jth (patch_size X patch_size) matrix in the column dimension
+        represents the j-th convolution kernel. 
+        The ith (patch_size X patch_size) matrix in the row dimension
+        represents the convolution kernel in ith channel.  
+    */
+    int rows = model->config.patch_size  * model->config.channels;
+    int cols = model->config.hidden_dim * model->config.patch_size;
     print_matrix(model->params.patch_proj_weight, rows, cols, "Patch Projection Weights");
 }
 
 void visualize_patch_proj_bias(const ViT* model) {
-    int rows = 1;
+    // This is importation for the convolution operation
+    /* Assumption: 
+        Same as proj_weight (see proj_weight comment), but for every (patch_size X patch_size)
+        matrix we only have 1 scalar bias.
+    */
+    int rows = model->config.channels;
     int cols = model->config.hidden_dim;
     print_matrix(model->params.patch_proj_bias, rows, cols, "Patch Projection Biases");
 }
@@ -518,12 +597,12 @@ void visualize_vit_parameters(const ViT* model) {
 int main() {
     // Initialize model configuration
     ViTConfig config = {
-        .image_size = 4,
+        .image_size = 2,
         .channels = 1,
         .patch_size = 2,
         .num_layers = 1,
         .num_heads = 2,
-        .hidden_dim = 5,
+        .hidden_dim = 2,
         .num_classes = 2
     };
 
@@ -550,7 +629,7 @@ int main() {
         return 1;
     }
     
-    initialize_ones(image, img_mem_size/sizeof(float));
+    initialize_random(image, img_mem_size/sizeof(float));
 
     // Run forward pass
     float* patch_embds = vit_forward(&model, image);
@@ -559,7 +638,8 @@ int main() {
     visualize_patch_proj_bias(&model);
     print_matrix(image, W, H, "Image");
     print_matrix(patch_embds, N, D, "Patch Embeddings");
-    
+    // printf("%f\n", __IMAGE(0,1,image,config));
+
     free(patch_embds);
     free(image);
     free(model.params_memory);
