@@ -161,14 +161,12 @@ void patch_embed(float* out, const float* image, const ViT* model,
     int N = (H / P) * (W / P);
     int pp = P * P;
 
+    #pragma omp parallel for collapse(2)
     for (int i_patch = 0; i_patch < N; ++i_patch) {
         for (int j_kernel = 0; j_kernel < D; ++j_kernel) {
             ___CONVOLUTION(image, (*model), out, i_patch, j_kernel);
         }
     }
-    // #pragma omp parallel for collapse(2)
-    // TODO: Implement single threaded convolution
-
 }
 
 // ----------------------------------------------------------------------------
@@ -597,12 +595,12 @@ void visualize_vit_parameters(const ViT* model) {
 int main() {
     // Initialize model configuration
     ViTConfig config = {
-        .image_size = 2,
+        .image_size = 512,
         .channels = 1,
-        .patch_size = 2,
+        .patch_size = 16,
         .num_layers = 1,
         .num_heads = 2,
-        .hidden_dim = 2,
+        .hidden_dim = 128,
         .num_classes = 2
     };
 
