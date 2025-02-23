@@ -48,69 +48,6 @@ void print_matrix(const float* matrix, int rows, int cols, const char* name);
 
 #define RANDOM_STATE 69
 
-#define __IMAGE(i_p, j_dim, image, config) ({ \
-    size_t img_dims_c = config.image_size; \
-    size_t img_dims_r = config.image_size * config.channels; \
-    size_t p_size = config.patch_size; \
-    size_t p_row = i_p / ((img_dims_c / p_size)); \
-    size_t p_col = i_p % (img_dims_c / p_size); \
-    size_t init_idx = (p_row * img_dims_c + p_col) * p_size; \
-    size_t dim_idx = (j_dim / p_size) * img_dims_c; \
-    size_t offset = j_dim % p_size; \
-    size_t idx = init_idx + dim_idx + offset; \
-    if (idx >= img_dims_r * img_dims_c) { \
-        fprintf(stderr, "Index out of bounds at IMAGE %s:%d\n", __FILE__, __LINE__); \
-        exit(EXIT_FAILURE); \
-    } \
-    image[idx]; \
-})
-
-#define __KERNEL(j_kernel, ker_dim, model) ({ \
-    float* wei = model.params.patch_proj_weight; \
-    size_t p_size = model.config.patch_size; \
-    size_t weight_dims_y = model.config.hidden_dim * p_size; \
-    size_t ker_row = j_kernel * p_size; \
-    size_t dim_idx = (ker_dim / p_size) * weight_dims_y; \
-    size_t offset = ker_dim % p_size; \
-    size_t idx = ker_row + dim_idx + offset; \
-    if (idx >= p_size * weight_dims_y) { \
-        fprintf(stderr, "Index out of bounds at KERNEL WEIGHT %s:%d\n", __FILE__, __LINE__); \
-        exit(EXIT_FAILURE); \
-    } \
-    wei[idx]; \
-})
-
-#define __KERNEL_BIAS(j_kernel, model) ({ \
-    float* bias = model.params.patch_proj_bias; \
-    size_t p_size = model.config.patch_size; \
-    size_t weight_dims_y = model.config.hidden_dim; \
-    size_t ker_row = j_kernel; \
-    size_t idx = ker_row; \
-    if (idx >= weight_dims_y) { \
-        fprintf(stderr, "Index out of bounds at KERNEL BIAS %s:%d\n", __FILE__, __LINE__); \
-        exit(EXIT_FAILURE); \
-    } \
-    bias[idx]; \
-})
-
-#define __PROJ_PATCH(i_patch, j_kernel, model, out) ({ \
-    size_t cols = model.config.hidden_dim; \
-    size_t idx = cols*i_patch + j_kernel; \
-    &out[idx]; \
-})
-
-
-// #TODO: make things work for multiple channels  
-#define ___CONVOLUTION(image, model, out, i_patch, j_kernel) ({ \
-    size_t kernel_dims = model.config.patch_size * model.config.patch_size; \
-    float result = 0.0; \
-    for (size_t idx = 0; idx < kernel_dims; ++idx) { \
-        result += __IMAGE(i_patch, idx, image, model.config) * __KERNEL(j_kernel, idx, model); \
-    } \
-    result += __KERNEL_BIAS(j_kernel, model); \
-    result; \
-})
-
 
 // ----------------------------------------------------------------------------
 // Core Components
@@ -120,6 +57,7 @@ typedef struct {
     int patch_size;    // Size of each patch (square)
     int num_layers;    // Number of transformer layers
     int num_heads;     // Number of attention heads
+    int num_blocks;
     int hidden_dim;    // Embedding dimension
     int num_classes;   // Output classes
 } ViTConfig;
@@ -156,6 +94,106 @@ typedef struct {
 } ViT;
 
 
+float get_image_value(size_t i_p, size_t j_dim, const float* image, const ViTConfig* config) {
+    size_t img_dims_c = config->image_size;
+    size_t img_dims_r = config->image_size * config->channels;
+    size_t p_size = config->patch_size;
+    size_t p_row = i_p / (img_dims_c / p_size);
+    size_t p_col = i_p % (img_dims_c / p_size);
+    size_t init_idx = (p_row * img_dims_c + p_col) * p_size;
+    size_t dim_idx = (j_dim / p_size) * img_dims_c;
+    size_t offset = j_dim % p_size;
+    size_t idx = init_idx + dim_idx + offset;
+    if (idx >= img_dims_r * img_dims_c) {
+        fprintf(stderr, "Index out of bounds at IMAGE %s:%d\n", __FILE__, __LINE__);
+        exit(EXIT_FAILURE);
+    }
+    return image[idx];
+}
+
+float get_kernel_value(size_t j_kernel, size_t ker_dim, const ViT* model) {
+    float* wei = model->params.patch_proj_weight;
+    size_t p_size = model->config.patch_size;
+    size_t weight_dims_y = model->config.hidden_dim * p_size;
+    size_t ker_row = (j_kernel / model->config.hidden_dim)*(p_size*p_size*model->config.hidden_dim) + (j_kernel % model->config.hidden_dim)*p_size;
+    size_t dim_idx = (ker_dim / p_size) * weight_dims_y;
+    size_t offset = ker_dim % p_size;
+    size_t idx = ker_row + dim_idx + offset;
+    if (idx >= model->config.channels*p_size * weight_dims_y) {
+        fprintf(stderr, "Index out of bounds at KERNEL WEIGHT %s:%d\n", __FILE__, __LINE__);
+        exit(EXIT_FAILURE);
+    }
+    return wei[idx];
+}
+
+float get_kernel_bias(size_t j_kernel, const ViT* model) {
+    float* bias = model->params.patch_proj_bias;
+    size_t weight_dims_y = model->config.hidden_dim;
+    size_t idx = j_kernel;
+    if (idx >= model->config.channels*weight_dims_y) {
+        fprintf(stderr, "Index %ld out of bounds at KERNEL BIAS %s:%d\n",idx, __FILE__, __LINE__);
+        exit(EXIT_FAILURE);
+    }
+    return bias[idx];
+}
+
+float* get_proj_patch(size_t i_patch, size_t j_kernel, const ViT* model, float* out) {
+    size_t cols = model->config.hidden_dim;
+    size_t idx = cols * i_patch + j_kernel;
+    return &out[idx];
+}
+
+float convolution(const float* image, const ViT* model, float* out, size_t i_patch, size_t j_kernel) {
+    size_t kernel_dims = model->config.patch_size * model->config.patch_size;
+    float result = 0.0;
+    for (size_t idx = 0; idx < kernel_dims; ++idx) {
+        float i = get_image_value(i_patch, idx, image, &model->config);
+        float k = get_kernel_value(j_kernel, idx, model);
+        result +=  i * k;
+        // printf("%f * %f + ", i, k);
+    }
+    float b = get_kernel_bias(j_kernel, model);
+    result += b;
+    // printf("%f -- ", b);
+    return result;
+}
+
+
+void mat_mul(float* out, const float* mat1, const float* mat2, int rows1, int cols1, int cols2) {}
+
+
+void query_key_value(float* out, const float* embeddings, const ViT* model, size_t head_idx, size_t block_idx) {
+    int hidden_dim = model->config.hidden_dim;
+    int I = model->config.image_size;
+    int P = model->config.patch_size;
+    int num_patches = (I/P)*(I/P);
+    int num_heads = model->config.num_heads;
+    int head_size = hidden_dim / num_heads;
+    const float* weights = model->params.attn_qkv_weight; 
+
+    int block_length = block_idx*num_heads*head_size*3*hidden_dim;
+    int head_length = head_size*3*hidden_dim;
+    float* Q = &weights[block_length + head_idx*head_length];
+    float* K = weights + head_size;
+    float* V = weights + 2*head_size;
+
+    // Inititlaizing intermediate buffers for single head computation
+    size_t buff_size = head_size*(num_patches+1)*sizeof(float);
+    float* q_res = (float*) malloc(buff_size); // (N+1) x head_size
+    float* k_res = (float*) malloc(buff_size); // (N+1) x head_size
+    float* v_res = (float*) malloc(buff_size); // (N+1) x head_size
+    // ((N+1)x(hidden_dim) @ (hidden_dim x head_size)) = ((N+1)xhead_size))
+    mat_mul(q_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
+    mat_mul(k_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
+    mat_mul(v_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
+
+    // mat_mul(q_res, )
+
+
+}
+
+
+
 
 // ----------------------------------------------------------------------------
 // Layer Implementations
@@ -167,11 +205,15 @@ void patch_embed(float* out, const float* image, const ViT* model,
     int pp = P * P;
 
     #pragma omp parallel for collapse(3)
-    for (size_t c_idx = 0; c_idx < C; ++c_idx) {
-        for (int i_patch = 0; i_patch < N; ++i_patch) {
-            for (int j_kernel = 0; j_kernel < D; ++j_kernel) {
-                int patch_idx = c_idx*N + i_patch;
-                *(__PROJ_PATCH(i_patch, j_kernel,  (*model), out)) += ___CONVOLUTION(image, (*model), out, patch_idx, j_kernel);
+    for (int i_patch = 0; i_patch < N; ++i_patch) {
+        for (int j_kernel = 0; j_kernel < D; ++j_kernel) {
+            for (size_t c_idx = 0; c_idx < C; ++c_idx) {
+                int patch_idx = c_idx * N + i_patch;
+                int kernel_idx = c_idx * D + j_kernel;
+                // printf("Channel: %ld Kernel:%d, Patch: %d ", c_idx, kernel_idx, patch_idx);
+                float* proj_patch = get_proj_patch(i_patch, j_kernel, model, out);
+                *proj_patch += convolution(image, model, out, patch_idx, kernel_idx);
+                // printf("Curr Sum: %f--- Added into %ld,%ld\n", *proj_patch, i_patch, j_kernel);
             }
         }
     }
@@ -215,6 +257,76 @@ void add_cls_token(float* concat_embd, const float* cls_token, const float* patc
     }
 
 }
+// Needs to output attention scores
+void attention_forward(float* attn_out, const float* input_embd, const ViT* model,
+    int n_blocks, int n_patches, int hidden_dim, int n_heads) {
+        int head_dim = hidden_dim / n_heads;
+        float* qkv = model->params.attn_proj_weight;
+        float* q = qkv;
+        float* k = qkv + n_patches * hidden_dim;
+        float* v = qkv + 2 * n_patches * hidden_dim;
+
+        // Compute Q, K, V
+        #pragma omp parallel for
+        for (int i = 0; i < n_patches; i++) {
+            for (int j = 0; j < hidden_dim; j++) {
+                q[i * hidden_dim + j] = 0.0f;
+                for (int d = 0; d < hidden_dim; d++) {
+                    q[i * hidden_dim + j] += input_embd[i * hidden_dim + d] * model->params.attn_qkv_weight[d * 3 * hidden_dim + j];
+                }
+                q[i * hidden_dim + j] += model->params.attn_qkv_bias[j];
+            }
+        }
+
+        // Compute attention scores
+        float* attn_scores = (float*)malloc(n_patches * n_patches * sizeof(float));
+        #pragma omp parallel for collapse(2)
+        for (int i = 0; i < n_patches; i++) {
+            for (int j = 0; j < n_patches; j++) {
+                attn_scores[i * n_patches + j] = 0.0f;
+                for (int d = 0; d < head_dim; d++) {
+                    attn_scores[i * n_patches + j] += q[i * hidden_dim + d] * k[j * hidden_dim + d];
+                }
+                attn_scores[i * n_patches + j] /= sqrtf((float)head_dim);
+            }
+        }
+
+        // Softmax
+        #pragma omp parallel for
+        for (int i = 0; i < n_patches; i++) {
+            float sum = 0.0f;
+            for (int j = 0; j < n_patches; j++) {
+                attn_scores[i * n_patches + j] = expf(attn_scores[i * n_patches + j]);
+                sum += attn_scores[i * n_patches + j];
+            }
+            for (int j = 0; j < n_patches; j++) {
+                attn_scores[i * n_patches + j] /= sum;
+            }
+        }
+
+        // Compute attention output
+        #pragma omp parallel for
+        for (int i = 0; i < n_patches; i++) {
+            for (int j = 0; j < hidden_dim; j++) {
+                attn_out[i * hidden_dim + j] = 0.0f;
+                for (int k = 0; k < n_patches; k++) {
+                    attn_out[i * hidden_dim + j] += attn_scores[i * n_patches + k] * v[k * hidden_dim + j];
+                }
+            }
+        }
+
+        // Apply output projection
+        #pragma omp parallel for
+        for (int i = 0; i < n_patches; i++) {
+            for (int j = 0; j < hidden_dim; j++) {
+                float sum = 0.0f;
+                for (int d = 0; d < hidden_dim; d++) {
+                    sum += attn_out[i * hidden_dim + d] * model->params.attn_proj_weight[d * hidden_dim + j];
+                }
+                attn_out[i * hidden_dim + j] = sum + model->params.attn_proj_bias[j];
+            }
+        }
+}
 
 // ----------------------------------------------------------------------------
 // Forward Pass
@@ -251,7 +363,7 @@ float* vit_forward(ViT* model, const float* image) {
     add_position_embeddings(concat_embd, model->params.pos_emb, 1, N, D);
 
     // Multi-head attention
-    // attention_forward(attn_out, patches, 1, N, D, c.num_heads);
+    // attention_forward(attn_out, concat_embd, model, 1, N, D, c.num_heads);
 
     // Cleanup intermediate buffers
     free(patches);
@@ -275,13 +387,17 @@ void vit_alloc(ViT* model, int verbose) {
     int C = config.channels;  // RGB channels
     int N = (config.image_size / P) * (config.image_size / P);
     int D = config.hidden_dim;
+    int H = config.num_heads;
+    int H_S = D / H;
+    int B_S = config.num_blocks;
     
+
     size_t param_sizes[] = {
         C*P*P*D,        // patch_proj_weight
-        D,              // patch_proj_bias
+        C*D,              // patch_proj_bias
         (N+1)*D,        // pos_emb
-        D*3*D,          // attn_qkv_weight
-        3*D,            // attn_qkv_bias
+        D*3*H_S*H*B_S,          // attn_qkv_weight (I know what I did, so STFU)
+        D*3*H_S*H*B_S,            // attn_qkv_bias
         D*D,            // attn_proj_weight
         D,              // attn_proj_bias
         D*4*D,          // mlp_fc1_weight
@@ -308,7 +424,7 @@ void vit_alloc(ViT* model, int verbose) {
 
     if (verbose) printf("Allocating memory for patch projection biases: %ld bytes\n", D*sizeof(float));
     model->params.patch_proj_bias = ptr;
-    ptr += D;
+    ptr += C*D;
 
     if (verbose) printf("Allocating memory for positional embeddings: %ld bytes\n", (N+1)*D*sizeof(float));
     model->params.pos_emb = ptr;            
@@ -317,11 +433,11 @@ void vit_alloc(ViT* model, int verbose) {
     if (verbose) printf("====================================\n");
     if (verbose) printf("Allocating memory for attention QKV weights: %ld bytes\n", D*3*D*sizeof(float));
     model->params.attn_qkv_weight = ptr;    
-    ptr += D*3*D;
+    ptr += D*3*H_S*H*B_S;
 
     if (verbose) printf("Allocating memory for attention QKV biases: %ld bytes\n", 3*D*sizeof(float));
     model->params.attn_qkv_bias = ptr;      
-    ptr += 3*D;
+    ptr += D*3*H_S*H*B_S;
 
     if (verbose) printf("Allocating memory for attention projection weights: %ld bytes\n", D*D*sizeof(float));
     model->params.attn_proj_weight = ptr;   
@@ -454,6 +570,9 @@ void vit_init(ViT* model, int verbose) {
     int C = model->config.channels;  // RGB channels
     int N = (config.image_size / P) * (config.image_size / P);
     int D = config.hidden_dim;
+    int H = config.num_heads;
+    int H_S = D / H;
+    int B_S = config.num_blocks;
     if (verbose) {
         printf("************************************\n");
         printf("Vision Transformer (ViT) - Random Initialization\n");
@@ -465,20 +584,20 @@ void vit_init(ViT* model, int verbose) {
 
     // Initialize each component
     if (verbose) printf("Initializing patch projection weights\n");
-    init_patch_proj_weight(model->params.patch_proj_weight, P * P * D);
+    init_patch_proj_weight(model->params.patch_proj_weight, C * P * P * D);
 
     if (verbose) printf("Initializing patch projection biases\n");
-    init_patch_proj_bias(model->params.patch_proj_bias, D);
+    init_patch_proj_bias(model->params.patch_proj_bias, C*D);
 
     if (verbose) printf("Initializing positional embeddings\n");
     init_pos_emb(model->params.pos_emb, (N + 1) * D);
 
     if (verbose) printf("====================================\n");
     if (verbose) printf("Initializing attention QKV weights\n");
-    init_attn_qkv_weight(model->params.attn_qkv_weight, D * 3 * D);
+    init_attn_qkv_weight(model->params.attn_qkv_weight, D*3*H_S*H*B_S);
 
     if (verbose) printf("Initializing attention QKV biases\n");
-    init_attn_qkv_bias(model->params.attn_qkv_bias, 3 * D);
+    init_attn_qkv_bias(model->params.attn_qkv_bias, D*3*H_S*H*B_S);
 
     if (verbose) printf("Initializing attention projection weights\n");
     init_attn_proj_weight(model->params.attn_proj_weight, D * D);
@@ -512,7 +631,6 @@ void vit_init(ViT* model, int verbose) {
 }
 
 
-
 // ----------------------------------------------------------------------------
 // Visualization Functions
 // Helper function to print a 2D matrix
@@ -536,9 +654,11 @@ void visualize_patch_proj_weight(const ViT* model) {
         The ith (patch_size X patch_size) matrix in the row dimension
         represents the convolution kernel in ith channel.  
     */
-    int rows = model->config.patch_size;
+    int rows = model->config.patch_size*model->config.channels;
     int cols = model->config.hidden_dim * model->config.patch_size;
-    print_matrix(model->params.patch_proj_weight, rows, cols, "Patch Projection Weights");
+    char name[256];
+    snprintf(name, sizeof(name), "Patch Projection Weights (Number of Kernels: %d, Kernel Size: %dx%d)", model->config.hidden_dim, model->config.patch_size, model->config.patch_size);
+    print_matrix(model->params.patch_proj_weight, rows, cols, name);
 }
 
 void visualize_patch_proj_bias(const ViT* model) {
@@ -547,7 +667,7 @@ void visualize_patch_proj_bias(const ViT* model) {
         Same as proj_weight (see proj_weight comment), but for every (patch_size X patch_size)
         matrix we only have 1 scalar bias.
     */
-    int rows = 1;
+    int rows = model->config.channels;
     int cols = model->config.hidden_dim;
     print_matrix(model->params.patch_proj_bias, rows, cols, "Patch Projection Biases");
 }
@@ -559,15 +679,21 @@ void visualize_pos_emb(const ViT* model) {
 }
 
 void visualize_attn_qkv_weight(const ViT* model) {
-    int rows = model->config.hidden_dim;
-    int cols = model->config.channels * model->config.hidden_dim;
-    print_matrix(model->params.attn_qkv_weight, rows, cols, "Attention QKV Weights");
+    int rows = model->config.hidden_dim * model->config.num_heads * model->config.num_blocks;
+    int H_S = model->config.hidden_dim / model->config.num_heads;
+    int cols = 3 * H_S;
+    char name[256];
+    snprintf(name, sizeof(name), "Attention QKV Weights (Heads: %d, Blocks: %d, Head Size: %d)", model->config.num_heads, model->config.num_blocks, H_S);
+    print_matrix(model->params.attn_qkv_weight, rows, cols, name);
 }
 
 void visualize_attn_qkv_bias(const ViT* model) {
-    int rows = 1;
-    int cols = model->config.channels * model->config.hidden_dim;
-    print_matrix(model->params.attn_qkv_bias, rows, cols, "Attention QKV Biases");
+    int rows = model->config.hidden_dim * model->config.num_heads * model->config.num_blocks;
+    int H_S = model->config.hidden_dim / model->config.num_heads;
+    int cols = 3 * H_S;
+    char name[256];
+    snprintf(name, sizeof(name), "Attention QKV Biases (Heads: %d, Blocks: %d, Head Size: %d)", model->config.num_heads, model->config.num_blocks, H_S);
+    print_matrix(model->params.attn_qkv_bias, rows, cols, name);
 }
 
 void visualize_attn_proj_weight(const ViT* model) {
@@ -649,12 +775,13 @@ void visualize_vit_parameters(const ViT* model) {
 int main() {
     // Initialize model configuration
     ViTConfig config = {
-        .image_size = 8,
+        .image_size = 4,
         .channels = 1,
         .patch_size = 2,
         .num_layers = 1,
-        .num_heads = 2,
-        .hidden_dim = 4,
+        .num_heads = 1,
+        .num_blocks = 1,
+        .hidden_dim = 3,
         .num_classes = 2
     };
 
@@ -681,16 +808,18 @@ int main() {
         return 1;
     }
     
-    initialize_random(image, img_mem_size/sizeof(float));
+    initialize_ones(image, img_mem_size/sizeof(float));
 
     // Run forward pass
     float* patch_embds = vit_forward(&model, image);
     
-    visualize_patch_proj_weight(&model);
-    visualize_patch_proj_bias(&model);
+    // visualize_patch_proj_weight(&model);
+    // visualize_patch_proj_bias(&model);
+    // visualize_pos_emb(&model);
     print_matrix(image, W*C, H, "Image");
-    visualize_pos_emb(&model);
-    print_matrix(patch_embds, N+1, D, "CLS+Patch Embeddings");
+    // print_matrix()
+    print_matrix(patch_embds, N, D, "CLS+Patch Embeddings");
+    visualize_attn_qkv_weight(&model);
 
     free(patch_embds);
     free(image);
