@@ -159,37 +159,152 @@ float convolution(const float* image, const ViT* model, float* out, size_t i_pat
 }
 
 
-void mat_mul(float* out, const float* mat1, const float* mat2, int rows1, int cols1, int cols2) {}
+void QKV_MUL(float* out, const float* mat1, const float* mat2, int rows1, int cols1, int cols2) {
+    for (size_t p_idx = 0; p_idx < rows1; ++p_idx) {
+        for (size_t col_idx = 0; col_idx < cols2; ++col_idx) {
+            size_t idx = p_idx*cols2 + col_idx;
+            // printf("Patch: %ld Col: %ld --- ", p_idx, col_idx);
+            for (size_t row_idx = 0; row_idx < cols1; ++row_idx) {
+                float  i1 = mat1[p_idx*cols1 + row_idx];
+                size_t weight_idx = col_idx + row_idx*cols2*3;
+                float i2 = mat2[weight_idx];
+                out[idx] +=  i1*i2;
+                // printf("%f*%f (index: %ld) + ", i1, i2, weight_idx);
+            }
+            // printf("= %f\n", out[idx]);
+        }
+    }
+    // printf("-----------------------------\n");
+}
 
+void MAT_MUL(float* out, const float* mat1, const float* mat2, int rows1, int cols1, int cols2) {
+    for (size_t p_idx = 0; p_idx < rows1; ++p_idx) {
+        for (size_t col_idx = 0; col_idx < cols2; ++col_idx) {
+            size_t idx = p_idx * cols2 + col_idx;
+            out[idx] = 0.0f;
+            for (size_t row_idx = 0; row_idx < cols1; ++row_idx) {
+                float i1 = mat1[p_idx * cols1 + row_idx];
+                float i2 = mat2[row_idx * cols2 + col_idx];
+                out[idx] += i1 * i2;
+                // printf("%f*%f + ", i1, i2);
+            }
+            // printf("= %f\n", out[idx]);
+
+        }
+    }
+}
+
+void TRANSPOSE_MAT(float* out, const float* mat, int rows, int cols) {
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            out[j * rows + i] = mat[i * cols + j];
+        }
+    }
+}
+
+void SCALE_MAT(float* mat, int rows, int cols, float scale_factor) {
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            mat[i * cols + j] /= scale_factor;
+        }
+    }
+}
+
+
+void SOFTMAX_MAT(float* result, float* wei, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        float sum_exp = 0.0;
+
+        // Compute sum of exponentials
+        for (int j = 0; j < cols; j++) {
+            sum_exp += exp(wei[i * cols + j]);  // Accessing row-major elements
+        }
+
+        // Compute softmax values
+        for (int j = 0; j < cols; j++) {
+            result[i * cols + j] = exp(wei[i * cols + j]) / sum_exp;
+        }
+    }
+}
+
+
+void head_copy(float* out, const float* in, size_t head_idx) {}
 
 void query_key_value(float* out, const float* embeddings, const ViT* model, size_t head_idx, size_t block_idx) {
-    int hidden_dim = model->config.hidden_dim;
-    int I = model->config.image_size;
-    int P = model->config.patch_size;
-    int num_patches = (I/P)*(I/P);
-    int num_heads = model->config.num_heads;
-    int head_size = hidden_dim / num_heads;
-    const float* weights = model->params.attn_qkv_weight; 
+    size_t hidden_dim = model->config.hidden_dim;
+    size_t I = model->config.image_size;
+    size_t P = model->config.patch_size;
+    size_t num_patches = (I/P)*(I/P);
+    size_t num_heads = model->config.num_heads;
+    size_t head_size = hidden_dim / num_heads;
+    float* weights = model->params.attn_qkv_weight;
 
-    int block_length = block_idx*num_heads*head_size*3*hidden_dim;
-    int head_length = head_size*3*hidden_dim;
-    float* Q = &weights[block_length + head_idx*head_length];
-    float* K = weights + head_size;
-    float* V = weights + 2*head_size;
+    if (head_idx > num_heads) {
+        fprintf(stderr, "Out of bounds head id of %ld", head_idx);
+    }
+    if (block_idx > model->config.num_blocks) {
+        fprintf(stderr, "Out of bounds block id of %ld", block_idx);
+    }
 
+    if (head_size * num_heads != hidden_dim) {
+        fprintf(stderr, "Invalid configuration: hidden_dim is not divisible by num_heads\n");
+        exit(EXIT_FAILURE);
+    }
+
+    size_t head_length = head_size*3*hidden_dim;
+    size_t block_length = num_heads*head_length;
+
+    float* Q = &weights[block_idx*block_length + head_idx*head_length];
+    float* K = Q + head_size;
+    float* V = K + head_size;
     // Inititlaizing intermediate buffers for single head computation
     size_t buff_size = head_size*(num_patches+1)*sizeof(float);
     float* q_res = (float*) malloc(buff_size); // (N+1) x head_size
     float* k_res = (float*) malloc(buff_size); // (N+1) x head_size
+    float* k_res_t = (float*) malloc(buff_size); // head_size x (N+1)
     float* v_res = (float*) malloc(buff_size); // (N+1) x head_size
+    
     // ((N+1)x(hidden_dim) @ (hidden_dim x head_size)) = ((N+1)xhead_size))
-    mat_mul(q_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
-    mat_mul(k_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
-    mat_mul(v_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
+    QKV_MUL(q_res, embeddings, Q, num_patches+1, hidden_dim, head_size);
+    QKV_MUL(k_res, embeddings, K, num_patches+1, hidden_dim, head_size);
+    QKV_MUL(v_res, embeddings, V, num_patches+1, hidden_dim, head_size);
 
-    // mat_mul(q_res, )
+    TRANSPOSE_MAT(k_res_t, k_res, num_patches+1, head_size);
+
+    // Scaled dot-product --> (Q * Transpose(V)) / sqrt(head_size)
+    float* QK_t = (float*)malloc((num_patches+1)*(num_patches+1)*sizeof(float));
+    MAT_MUL(QK_t, q_res, k_res_t, num_patches+1, head_size, num_patches+1);
+    SCALE_MAT(QK_t, num_patches+1, num_patches+1, sqrtf((float)head_size));
 
 
+    float* QK_t_softmaxed = (float*)malloc((num_patches+1)*(num_patches+1)*sizeof(float));
+    SOFTMAX_MAT(QK_t_softmaxed, QK_t, num_patches+1, num_patches+1);
+
+    // ((Q * V_t) / (d_k)) * V
+    float* QK_tV = (float*)malloc(buff_size);
+    MAT_MUL(QK_tV, QK_t_softmaxed, v_res, num_patches+1, num_patches+1, head_size);
+    
+    // // Copying respective head output to the right output address
+    // head_copy(out, QK_tV, head_idx);
+    
+    
+    print_matrix(q_res, num_patches+1, head_size, "Query Result");
+    print_matrix(k_res_t, head_size, num_patches+1, "Key-T Result");
+    print_matrix(v_res, num_patches+1, head_size, "Value Result");
+    print_matrix(QK_t, num_patches+1, num_patches+1, "Query-Key-T");
+    print_matrix(QK_t, num_patches+1, num_patches+1, "Query-Key-T - Scaled");
+    print_matrix(QK_t_softmaxed, num_patches+1, num_patches+1, "Query-Key-T - Scaled - Softmaxed");
+
+    print_matrix(QK_tV, num_patches+1, head_size, "Query-Key-T - Scaled -t Value");
+
+
+    free(QK_t_softmaxed);
+    free(k_res_t);
+    free(k_res);
+    free(q_res);
+    free(v_res);
+    free(QK_t);
+    free(QK_tV);
 }
 
 
@@ -260,72 +375,7 @@ void add_cls_token(float* concat_embd, const float* cls_token, const float* patc
 // Needs to output attention scores
 void attention_forward(float* attn_out, const float* input_embd, const ViT* model,
     int n_blocks, int n_patches, int hidden_dim, int n_heads) {
-        int head_dim = hidden_dim / n_heads;
-        float* qkv = model->params.attn_proj_weight;
-        float* q = qkv;
-        float* k = qkv + n_patches * hidden_dim;
-        float* v = qkv + 2 * n_patches * hidden_dim;
-
-        // Compute Q, K, V
-        #pragma omp parallel for
-        for (int i = 0; i < n_patches; i++) {
-            for (int j = 0; j < hidden_dim; j++) {
-                q[i * hidden_dim + j] = 0.0f;
-                for (int d = 0; d < hidden_dim; d++) {
-                    q[i * hidden_dim + j] += input_embd[i * hidden_dim + d] * model->params.attn_qkv_weight[d * 3 * hidden_dim + j];
-                }
-                q[i * hidden_dim + j] += model->params.attn_qkv_bias[j];
-            }
-        }
-
-        // Compute attention scores
-        float* attn_scores = (float*)malloc(n_patches * n_patches * sizeof(float));
-        #pragma omp parallel for collapse(2)
-        for (int i = 0; i < n_patches; i++) {
-            for (int j = 0; j < n_patches; j++) {
-                attn_scores[i * n_patches + j] = 0.0f;
-                for (int d = 0; d < head_dim; d++) {
-                    attn_scores[i * n_patches + j] += q[i * hidden_dim + d] * k[j * hidden_dim + d];
-                }
-                attn_scores[i * n_patches + j] /= sqrtf((float)head_dim);
-            }
-        }
-
-        // Softmax
-        #pragma omp parallel for
-        for (int i = 0; i < n_patches; i++) {
-            float sum = 0.0f;
-            for (int j = 0; j < n_patches; j++) {
-                attn_scores[i * n_patches + j] = expf(attn_scores[i * n_patches + j]);
-                sum += attn_scores[i * n_patches + j];
-            }
-            for (int j = 0; j < n_patches; j++) {
-                attn_scores[i * n_patches + j] /= sum;
-            }
-        }
-
-        // Compute attention output
-        #pragma omp parallel for
-        for (int i = 0; i < n_patches; i++) {
-            for (int j = 0; j < hidden_dim; j++) {
-                attn_out[i * hidden_dim + j] = 0.0f;
-                for (int k = 0; k < n_patches; k++) {
-                    attn_out[i * hidden_dim + j] += attn_scores[i * n_patches + k] * v[k * hidden_dim + j];
-                }
-            }
-        }
-
-        // Apply output projection
-        #pragma omp parallel for
-        for (int i = 0; i < n_patches; i++) {
-            for (int j = 0; j < hidden_dim; j++) {
-                float sum = 0.0f;
-                for (int d = 0; d < hidden_dim; d++) {
-                    sum += attn_out[i * hidden_dim + d] * model->params.attn_proj_weight[d * hidden_dim + j];
-                }
-                attn_out[i * hidden_dim + j] = sum + model->params.attn_proj_bias[j];
-            }
-        }
+        query_key_value(attn_out, input_embd, model, 0, 1);
 }
 
 // ----------------------------------------------------------------------------
@@ -346,6 +396,7 @@ float* vit_forward(ViT* model, const float* image) {
     mallocCheck(patches, N*D*sizeof(float));
     mallocCheck(cls_token, 1*D*sizeof(float));  // Class Token Vector
     mallocCheck(concat_embd, (N+1)*D*sizeof(float)); 
+    mallocCheck(attn_out, (N+1)*D*sizeof(float)); 
 
     // 1. Patch embedding
     patch_embed(patches, image,
@@ -363,11 +414,12 @@ float* vit_forward(ViT* model, const float* image) {
     add_position_embeddings(concat_embd, model->params.pos_emb, 1, N, D);
 
     // Multi-head attention
-    // attention_forward(attn_out, concat_embd, model, 1, N, D, c.num_heads);
+    attention_forward(attn_out, concat_embd, model, 1, N, D, c.num_heads);
 
     // Cleanup intermediate buffers
     free(patches);
     free(cls_token);
+    free(attn_out);
 
     return concat_embd;
 }
@@ -779,9 +831,9 @@ int main() {
         .channels = 1,
         .patch_size = 2,
         .num_layers = 1,
-        .num_heads = 1,
-        .num_blocks = 1,
-        .hidden_dim = 3,
+        .num_heads = 2,
+        .num_blocks = 2,
+        .hidden_dim = 4,
         .num_classes = 2
     };
 
@@ -818,7 +870,7 @@ int main() {
     // visualize_pos_emb(&model);
     print_matrix(image, W*C, H, "Image");
     // print_matrix()
-    print_matrix(patch_embds, N, D, "CLS+Patch Embeddings");
+    print_matrix(patch_embds, N+1, D, "CLS+Patch Embeddings");
     visualize_attn_qkv_weight(&model);
 
     free(patch_embds);
